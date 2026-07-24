@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" fill="none">
+  <defs>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#d97757"/>
+      <stop offset="100%" stop-color="#e463e4"/>
+    </linearGradient>
+  </defs>
+  <text x="0" y="32" font-family="Outfit, sans-serif" font-size="32" font-weight="800" letter-spacing="-1">
+    <tspan fill="#e0d6cf">NIMG</tspan><tspan fill="url(#accent)">A</tspan>
+  </text>
+</svg>

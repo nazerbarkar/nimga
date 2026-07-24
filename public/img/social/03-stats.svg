@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="1200" height="675">
+  <rect width="1200" height="675" fill="#131313"/>
+  <text x="600" y="200" text-anchor="middle" font-family="Arial, sans-serif" font-size="180" font-weight="900" fill="#d97757">[X]+</text>
+  <text x="600" y="300" text-anchor="middle" font-family="Arial, sans-serif" font-size="60" font-weight="700" fill="#ffffff">Unique Wallets</text>
+  <text x="600" y="380" text-anchor="middle" font-family="Arial, sans-serif" font-size="48" font-weight="700" fill="#d97757">Connected</text>
+  <rect x="350" y="420" width="500" height="2" fill="#2a2a2a"/>
+  <text x="600" y="480" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="400" fill="#9a918b">Real users. Real wallets. Zero fake accounts.</text>
+</svg>

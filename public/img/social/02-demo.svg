@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="1200" height="675">
+  <defs>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d97757"/>
+      <stop offset="100%" stop-color="#e91e8c"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="#131313"/>
+  <rect x="50" y="50" width="1100" height="575" rx="20" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="2"/>
+  <rect x="80" y="80" width="500" height="30" rx="6" fill="#222"/>
+  <rect x="80" y="130" width="400" height="20" rx="4" fill="#222"/>
+  <rect x="80" y="180" width="1040" height="400" rx="12" fill="#131313"/>
+  <text x="600" y="280" text-anchor="middle" font-family="Arial, sans-serif" font-size="64" font-weight="900" fill="#ffffff">From wallet to artwork</text>
+  <text x="600" y="370" text-anchor="middle" font-family="Arial, sans-serif" font-size="80" font-weight="900" fill="url(#g2)">in 10 seconds</text>
+  <text x="600" y="450" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="400" fill="#9a918b">Connect wallet → Type prompt → Get image</text>
+</svg>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="1200" height="675">
+  <rect width="1200" height="675" fill="#131313"/>
+  <text x="600" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="48" font-weight="900" fill="#d97757">WHY NIMGA?</text>
+  <rect x="200" y="140" width="800" height="2" fill="#2a2a2a"/>
+  <text x="600" y="220" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">✦</text>
+  <text x="640" y="220" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#e0d6cf"> Nimiq Wallet Login</text>
+  <text x="600" y="290" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">✦</text>
+  <text x="640" y="290" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#e0d6cf"> Free AI Generations</text>
+  <text x="600" y="360" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">✦</text>
+  <text x="640" y="360" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#e0d6cf"> Community Gallery</text>
+  <text x="600" y="430" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">✦</text>
+  <text x="640" y="430" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#e0d6cf"> Upvote System</text>
+  <text x="600" y="500" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">✦</text>
+  <text x="640" y="500" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#e0d6cf"> PWA Installable</text>
+  <text x="600" y="570" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">✦</text>
+  <text x="640" y="570" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#e0d6cf"> Zero Tracking</text>
+</svg>

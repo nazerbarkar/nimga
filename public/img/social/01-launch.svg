@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="1200" height="675">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#d97757"/>
+      <stop offset="100%" stop-color="#e91e8c"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="#131313"/>
+  <circle cx="1050" cy="120" r="300" fill="#d97757" opacity="0.05"/>
+  <circle cx="150" cy="550" r="250" fill="#e91e8c" opacity="0.05"/>
+  <text x="600" y="220" text-anchor="middle" font-family="Arial, sans-serif" font-size="120" font-weight="900" fill="url(#g1)">NIMGA</text>
+  <text x="600" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="48" font-weight="700" fill="#e0d6cf">AI Image Generator</text>
+  <text x="600" y="380" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" font-weight="400" fill="#9a918b">Powered by Nimiq Wallet</text>
+  <text x="600" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="600" fill="#d97757">Connect. Dream. Create.</text>
+  <rect x="450" y="540" width="300" height="3" rx="2" fill="#d97757"/>
+</svg>
