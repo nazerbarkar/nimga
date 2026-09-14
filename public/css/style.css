@@ -197,6 +197,9 @@ textarea::placeholder{color:var(--text3)}
   .history-grid{grid-template-columns:repeat(2,1fr)}
   .prompt-row{flex-direction:column;align-items:stretch}
   .btn-generate{width:100%;justify-content:center}
+  .create-box{flex-direction:column;align-items:stretch;padding:6px}
+  .create-box textarea{min-height:48px;padding:8px 12px}
+  .create-box .btn-generate{width:100%;height:44px;border-radius:12px;justify-content:center}
 }
 @media(max-width:480px){
   .history-grid{grid-template-columns:repeat(2,1fr)}
@@ -204,5 +207,5 @@ textarea::placeholder{color:var(--text3)}
   .btn-history span{display:none}
   .agent-btn span br{display:none}
   .agent-btn span small{display:none}
-  .showcase-img{display:none}
+  .showcase-img{opacity:.1}
 }

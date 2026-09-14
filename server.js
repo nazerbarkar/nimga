@@ -99,7 +99,8 @@ function verifySignedLogin({ address, publicKey, signature, nonce }) {
   if (!wallet || !nonce) return false;
   if (!loginNonces.has(nonce)) return false;
   try {
-    return Array.isArray(signature) && signature.length > 0;
+    const hasSig = (Array.isArray(signature) && signature.length > 0) || (typeof signature === 'string' && signature.length > 0);
+    return hasSig;
   } catch (err) {
     console.error('Wallet verification error:', err);
     return false;
@@ -151,7 +152,7 @@ app.post('/auth/verify', (req, res) => {
     if (rateLimit(ip, 5, 60000)) return res.status(429).json({ success: false, message: 'Too many attempts. Wait a minute.' });
     const { address, label, publicKey, signature, nonce } = req.body || {};
     const wallet = normalizeAddress(address || '');
-    if (!wallet || !nonce || !publicKey || !signature) {
+    if (!wallet || !nonce || !signature) {
       return res.status(400).json({ success: false, message: 'Missing wallet signature payload' });
     }
     const nonceEntry = loginNonces.get(nonce);
