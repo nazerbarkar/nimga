@@ -183,16 +183,22 @@ textarea::placeholder{color:var(--text3)}
 @keyframes toastOut{to{opacity:0;transform:translateX(40px) scale(.95)}}
 
 @media(max-width:768px){
-  .header{padding:0 16px}
+  .header{padding:0 12px}
+  .header-right{overflow:visible}
   .hero{padding:32px 16px 24px}
   .hero-title{font-size:32px}
   .creator-card{padding:20px 16px 16px}
   .agent-selector{gap:6px}
   .agent-btn{padding:10px 12px;font-size:12px}
   .agent-btn strong{font-size:12px}
-  .showcase-img{opacity:.15}
+  .showcase-images{display:none}
   .packages{grid-template-columns:1fr}
-  .user-area{gap:6px}
+  .user-area{gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .btn-history{padding:6px 10px;font-size:12px;gap:4px}
+  .btn-history span{display:none}
+  .credit-pill{padding:5px 10px;font-size:12px}
+  .btn-add-credits{width:26px;height:26px}
+  .wallet-badge{padding:5px 10px;font-size:12px}
   .wallet-badge span{display:none}
   .history-grid{grid-template-columns:repeat(2,1fr)}
   .prompt-row{flex-direction:column;align-items:stretch}
@@ -200,12 +206,4 @@ textarea::placeholder{color:var(--text3)}
   .create-box{flex-direction:column;align-items:stretch;padding:6px}
   .create-box textarea{min-height:48px;padding:8px 12px}
   .create-box .btn-generate{width:100%;height:44px;border-radius:12px;justify-content:center}
-}
-@media(max-width:480px){
-  .history-grid{grid-template-columns:repeat(2,1fr)}
-  .credit-pill span{display:none}
-  .btn-history span{display:none}
-  .agent-btn span br{display:none}
-  .agent-btn span small{display:none}
-  .showcase-img{opacity:.1}
 }
