@@ -69,7 +69,8 @@ async function api(ep, method = 'GET', body = null) {
   if (sessionToken) o.headers['Authorization'] = `Bearer ${sessionToken}`;
   if (body) o.body = JSON.stringify(body);
   const r = await fetch(`${API_BASE}${ep}`, o);
-  return r.json();
+  const text = await r.text();
+  try { return JSON.parse(text); } catch (_) { return { error: text || 'Request failed' }; }
 }
 
 function toast(type, msg, duration = 4000) {

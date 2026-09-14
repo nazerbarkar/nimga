@@ -130,7 +130,7 @@ textarea::placeholder{color:var(--text3)}
 .history-card-type{position:absolute;top:6px;left:6px;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;background:var(--accent);color:#fff}
 .badge-public{background:#22c55e;color:#fff}
 .badge-private{background:#ef4444;color:#fff}
-.history-card-actions{position:absolute;top:28px;left:6px;display:flex;gap:3px;opacity:0;transition:opacity .2s}
+.history-card-actions{position:absolute;top:28px;left:6px;display:flex;gap:3px;opacity:0;transition:opacity .2s;z-index:2}
 .history-card:hover .history-card-actions{opacity:1}
 .btn-card-dl,.btn-card-del{width:26px;height:26px;border-radius:6px;border:none;background:rgba(0,0,0,.6);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s}
 .btn-card-dl:hover{background:var(--accent)}
@@ -206,4 +206,6 @@ textarea::placeholder{color:var(--text3)}
   .create-box{flex-direction:column;align-items:stretch;padding:6px}
   .create-box textarea{min-height:48px;padding:8px 12px}
   .create-box .btn-generate{width:100%;height:44px;border-radius:12px;justify-content:center}
+  .history-card-actions{opacity:1}
+  .history-card-overlay{opacity:1}
 }
