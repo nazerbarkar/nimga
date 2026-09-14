@@ -5,11 +5,11 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const db = require('./database');
+const { InferenceClient } = require('@huggingface/inference');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5001;
 const TOKEN_SECRET = process.env.TOKEN_SECRET || (() => {
-  const fs = require('fs');
   const secretFile = path.join(__dirname, '.token_secret');
   try { return fs.readFileSync(secretFile, 'utf8'); } catch (_) {}
   const s = crypto.randomBytes(32).toString('hex');
@@ -19,12 +19,14 @@ const TOKEN_SECRET = process.env.TOKEN_SECRET || (() => {
 const TOKEN_EXPIRY = 24 * 60 * 60 * 1000;
 
 const NIMIQ_RPC_URL = 'https://rpc.nimiqwatch.com';
-
 const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
+const HF_API_TOKEN = process.env.HF_API_TOKEN || '';
 
 const IMAGES_DIR = path.join(__dirname, 'public', 'images');
+const VIDEOS_DIR = path.join(__dirname, 'public', 'videos');
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+if (!fs.existsSync(VIDEOS_DIR)) fs.mkdirSync(VIDEOS_DIR, { recursive: true });
 
 // ===== RATE LIMITER =====
 const rateLimits = new Map();
@@ -87,8 +89,7 @@ function toUserFriendlyAddress(raw) {
 const RECIPIENT_RAW = normalizeAddress(process.env.RECIPIENT_ADDRESS || '');
 const RECIPIENT_FRIENDLY = toUserFriendlyAddress(RECIPIENT_RAW);
 if (!RECIPIENT_FRIENDLY) {
-  console.error('WARNING: RECIPIENT_ADDRESS in .env is not a valid Nimiq address. Payments will not work.');
-  console.error('Set RECIPIENT_ADDRESS to your Nimiq wallet address (e.g. NQ27 9CG2 XP33 N5NH 29EP 2YUS LMKV 3EM0 R4DJ)');
+  console.error('WARNING: RECIPIENT_ADDRESS in .env is not a valid Nimiq address.');
 } else {
   console.log(`Payment recipient: ${RECIPIENT_FRIENDLY}`);
 }
@@ -121,8 +122,9 @@ const startServer = async () => {
 };
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/node_modules', express.static(path.join(__dirname, 'node_modules')));
 
 app.use((req, res, next) => {
   if (!serverReady) return res.status(503).json({ error: 'Server still initializing' });
@@ -166,6 +168,7 @@ app.post('/auth/verify', (req, res) => {
       expires: session.expires,
       walletAddress: wallet,
       freeRemaining: db.getRemainingFree(wallet),
+      freeVideoRemaining: db.getRemainingFreeVideo(wallet),
       credits: user.credits,
     });
   } catch (err) {
@@ -208,7 +211,7 @@ async function verifyNimiqPayment(txHash, expectedAmountLuna) {
   }
 }
 
-// ===== PROTECTED ROUTES =====
+// ===== PRICES =====
 app.get('/api/prices', (req, res) => {
   res.json({
     10: { nimiq: 1000, label: '10 Credits' },
@@ -217,6 +220,7 @@ app.get('/api/prices', (req, res) => {
   });
 });
 
+// ===== TEXT TO IMAGE =====
 app.post('/api/generate', requireAuth, async (req, res) => {
   const walletAddress = req.walletAddress;
   const { prompt, visibility } = req.body;
@@ -229,12 +233,12 @@ app.post('/api/generate', requireAuth, async (req, res) => {
   const remainingFree = db.getRemainingFree(walletAddress);
   let usedFree = false;
   if (remainingFree > 0) { db.useFreeGeneration(walletAddress); usedFree = true; }
-  else if (user.credits >= 1) { db.useCredit(walletAddress); }
+  else if (user.credits >= 1) { db.useCredit(walletAddress, 1); }
   else return res.status(403).json({ error: 'No credits remaining.', freeRemaining: 0, credits: user.credits });
 
   try {
     if (!CLOUDFLARE_ACCOUNT_ID || CLOUDFLARE_ACCOUNT_ID === 'your_cloudflare_account_id_here') {
-      throw new Error('Cloudflare credentials not configured. Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .env');
+      throw new Error('Cloudflare credentials not configured.');
     }
 
     const cfRes = await fetch(
@@ -257,31 +261,114 @@ app.post('/api/generate', requireAuth, async (req, res) => {
         const errJson = JSON.parse(buffer.toString());
         errMsg = errJson.errors?.[0]?.message || errMsg;
       } catch (_) {}
-      console.error('Cloudflare AI error:', cfRes.status, errMsg);
       throw new Error(errMsg);
     }
 
-    const base64 = buffer.toString('base64');
     const filename = `gen-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.png`;
     const filePath = path.join(IMAGES_DIR, filename);
     fs.writeFileSync(filePath, buffer);
     const imageUrl = `/images/${filename}`;
 
-    const genId = db.saveGeneration(walletAddress, prompt, imageUrl, vis);
-    galleryCache.new = null;
-    galleryCache.top = null;
+    const genId = db.saveGeneration(walletAddress, prompt, imageUrl, vis, 'text-to-image');
     const updatedUser = db.getUser(walletAddress);
     res.json({ id: genId, imageUrl, prompt, usedFree, freeRemaining: db.getRemainingFree(walletAddress), credits: updatedUser.credits });
   } catch (err) {
     console.error('Generation error:', err.message || err);
-    if (usedFree) db.reverseFreeGeneration(walletAddress); else db.reverseCredit(walletAddress);
+    if (usedFree) db.reverseFreeGeneration(walletAddress); else db.reverseCredit(walletAddress, 1);
     res.status(500).json({ error: err.message || 'Generation failed. Please try again.' });
   }
 });
 
+// ===== TEXT TO VIDEO (HuggingFace Wan2.2-TI2V-5B via Inference Providers) =====
+app.post('/api/generate-video', requireAuth, async (req, res) => {
+  const walletAddress = req.walletAddress;
+  const { prompt, visibility } = req.body;
+  if (!prompt) return res.status(400).json({ error: 'Prompt required' });
+  const vis = visibility === 'private' ? 'private' : 'public';
+
+  const user = db.getUser(walletAddress);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (user.credits >= 10) { db.useCredit(walletAddress, 10); }
+  else return res.status(403).json({ error: 'Not enough credits. 10 credits required.', credits: user.credits });
+
+  try {
+    if (!HF_API_TOKEN) throw new Error('HuggingFace API token not configured.');
+
+    const client = new InferenceClient(HF_API_TOKEN);
+    const videoBlob = await client.textToVideo({
+      model: 'Wan-AI/Wan2.2-TI2V-5B',
+      inputs: prompt,
+      provider: 'auto',
+    });
+
+    const videoBuffer = Buffer.from(await videoBlob.arrayBuffer());
+    const filename = `vid-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp4`;
+    const filePath = path.join(VIDEOS_DIR, filename);
+    fs.writeFileSync(filePath, videoBuffer);
+    const localVideoUrl = `/videos/${filename}`;
+
+    const genId = db.saveGeneration(walletAddress, prompt, null, vis, 'text-to-video', localVideoUrl);
+    const updatedUser = db.getUser(walletAddress);
+    res.json({ id: genId, videoUrl: localVideoUrl, prompt, credits: updatedUser.credits });
+  } catch (err) {
+    console.error('Video generation error:', err.message || err);
+    db.reverseCredit(walletAddress, 10);
+    res.status(500).json({ error: err.message || 'Video generation failed. Please try again.' });
+  }
+});
+
+// ===== IMAGE TO VIDEO (HuggingFace Wan2.2-TI2V-5B via Inference Providers) =====
+app.post('/api/generate-image-to-video', requireAuth, async (req, res) => {
+  const walletAddress = req.walletAddress;
+  const { prompt, imageBase64, visibility } = req.body;
+  if (!prompt || !imageBase64) return res.status(400).json({ error: 'Prompt and image required' });
+  const vis = visibility === 'private' ? 'private' : 'public';
+
+  const user = db.getUser(walletAddress);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (user.credits >= 10) { db.useCredit(walletAddress, 10); }
+  else return res.status(403).json({ error: 'Not enough credits. 10 credits required.', credits: user.credits });
+
+  try {
+    if (!HF_API_TOKEN) throw new Error('HuggingFace API token not configured.');
+
+    const imgData = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const imgBuffer = Buffer.from(imgData, 'base64');
+
+    const client = new InferenceClient(HF_API_TOKEN);
+    const videoBlob = await client.imageToVideo({
+      model: 'Wan-AI/Wan2.2-I2V-A14B',
+      inputs: new Blob([imgBuffer], { type: 'image/png' }),
+      parameters: { prompt },
+      provider: 'auto',
+    });
+
+    const videoBuffer = Buffer.from(await videoBlob.arrayBuffer());
+    const filename = `vid-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp4`;
+    const filePath = path.join(VIDEOS_DIR, filename);
+    fs.writeFileSync(filePath, videoBuffer);
+    const localVideoUrl = `/videos/${filename}`;
+
+    const imgFilename = `upload-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.png`;
+    fs.writeFileSync(path.join(IMAGES_DIR, imgFilename), imgBuffer);
+    const imageUrl = `/images/${imgFilename}`;
+
+    const genId = db.saveGeneration(walletAddress, prompt, imageUrl, vis, 'image-to-video', localVideoUrl);
+    const updatedUser = db.getUser(walletAddress);
+    res.json({ id: genId, videoUrl: localVideoUrl, imageUrl, prompt, credits: updatedUser.credits });
+  } catch (err) {
+    console.error('Image-to-video generation error:', err.message || err);
+    db.reverseCredit(walletAddress, 10);
+    res.status(500).json({ error: err.message || 'Image-to-video generation failed. Please try again.' });
+  }
+});
+
+// ===== HISTORY =====
 app.get('/api/history', requireAuth, (req, res) => {
   const gens = db.getGenerations(req.walletAddress);
-  res.json(gens.map(g => ({ id: g.id, prompt: g.prompt, image_url: g.image_url, visibility: g.visibility, votes: g.votes, created_at: g.created_at })));
+  res.json(gens.map(g => ({ id: g.id, prompt: g.prompt, image_url: g.image_url, video_url: g.video_url, type: g.type, visibility: g.visibility, created_at: g.created_at })));
 });
 
 app.delete('/api/history/:id', requireAuth, (req, res) => {
@@ -292,22 +379,25 @@ app.delete('/api/history/:id', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
+// ===== USER =====
 app.get('/api/user', requireAuth, (req, res) => {
   const user = db.getUser(req.walletAddress);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({
     walletAddress: user.wallet_address,
     freeRemaining: db.getRemainingFree(req.walletAddress),
+    freeVideoRemaining: db.getRemainingFreeVideo(req.walletAddress),
     credits: user.credits,
     createdAt: user.created_at,
   });
 });
 
+// ===== BUY CREDITS =====
 app.post('/api/buy-credits', requireAuth, (req, res) => {
   const { package: pkg } = req.body;
   const CREDIT_PRICES = { 10: 1000, 100: 10000, 1000: 100000 };
   if (!CREDIT_PRICES[pkg]) return res.status(400).json({ error: 'Invalid package' });
-  if (!RECIPIENT_FRIENDLY) return res.status(500).json({ error: 'Payment recipient not configured. Contact admin.' });
+  if (!RECIPIENT_FRIENDLY) return res.status(500).json({ error: 'Payment recipient not configured.' });
   const amount = CREDIT_PRICES[pkg];
   res.json({
     success: true,
@@ -337,48 +427,13 @@ app.post('/api/confirm-payment', requireAuth, async (req, res) => {
   res.json({ success: true, txId, creditsAdded: credits, totalCredits: user.credits });
 });
 
-// ===== GALLERY (public) =====
-const galleryCache = { new: null, top: null, at: 0 };
-const GALLERY_CACHE_TTL = 30000; // 30 seconds
-
+// ===== GALLERY =====
 app.get('/api/gallery', (req, res) => {
-  const { tab, limit, offset } = req.query;
-  const l = Math.min(parseInt(limit) || 50, 100);
+  const { limit, offset } = req.query;
+  const l = Math.min(parseInt(limit) || 30, 100);
   const o = parseInt(offset) || 0;
-  const isTop = tab === 'top';
-  const cacheKey = isTop ? 'top' : 'new';
-  const now = Date.now();
-
-  // Serve from cache if fresh
-  if (galleryCache[cacheKey] && (now - galleryCache.at) < GALLERY_CACHE_TTL && o === 0) {
-    return res.json(galleryCache[cacheKey]);
-  }
-
-  const items = isTop ? db.getGalleryTop(l, o) : db.getGalleryNew(l, o);
-  const wallet = validateSession(req.headers.authorization?.replace('Bearer ', ''));
-  const enriched = wallet ? items.map(g => ({
-    ...g,
-    userVote: db.getUserVote(g.id, wallet),
-  })) : items;
-
-  if (o === 0) {
-    galleryCache[cacheKey] = enriched;
-    galleryCache.at = now;
-  }
-  res.json(enriched);
-});
-
-// ===== VOTE =====
-app.post('/api/vote', requireAuth, (req, res) => {
-  const { generationId, value } = req.body;
-  if (!generationId || ![1, -1].includes(value)) {
-    return res.status(400).json({ error: 'generationId and value (1 or -1) required' });
-  }
-  const change = db.voteGeneration(generationId, req.walletAddress, value);
-  galleryCache.new = null;
-  galleryCache.top = null;
-  const gen = db.query('SELECT votes FROM generations WHERE id = ?', [generationId])[0];
-  res.json({ success: true, change, totalVotes: gen ? gen.votes : 0 });
+  const items = db.getGallery(l, o);
+  res.json(items);
 });
 
 app.get('/api/stats', (req, res) => { res.json(db.getStats()); });

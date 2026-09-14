@@ -2,11 +2,14 @@ const API_BASE = window.location.origin;
 let currentUser = null;
 let walletHub = null;
 let hubCheckout = null;
+let miniAppProvider = null;
+let connectionMethod = null;
 let pendingChallenge = null;
 let isGenerating = false;
 let paymentInFlight = false;
 let sessionToken = null;
-let currentGalleryTab = 'top';
+let currentAgentType = 'text-to-image';
+let uploadedImageBase64 = null;
 const SESSION_KEY = 'nimga_session';
 
 const $ = (id) => document.getElementById(id);
@@ -23,13 +26,18 @@ const DOM = {
   generateBtn: $('generate-btn'),
   createHint: $('create-hint'),
   genIndicator: $('generating-indicator'),
+  genStatusText: $('gen-status-text'),
   resultArea: $('result-area'),
   resultImage: $('result-image'),
+  resultVideo: $('result-video'),
   downloadBtn: $('download-btn'),
   newBtn: $('new-btn'),
-  galleryGrid: $('gallery-grid'),
-  visibilityCheck: $('visibility-check'),
-  visLabel: $('vis-label'),
+  uploadArea: $('upload-area'),
+  imageInput: $('image-input'),
+  uploadPlaceholder: $('upload-placeholder'),
+  uploadPreview: $('upload-preview'),
+  previewImg: $('preview-img'),
+  uploadRemove: $('upload-remove'),
   historyBtn: $('history-btn'),
   historyModal: $('history-modal'),
   closeHistory: $('close-history'),
@@ -37,6 +45,7 @@ const DOM = {
   lightbox: $('lightbox'),
   lightboxClose: $('lightbox-close'),
   lightboxImg: $('lightbox-img'),
+  lightboxVideo: $('lightbox-video'),
   lightboxPrompt: $('lightbox-prompt'),
   lightboxDownload: $('lightbox-download'),
   modal: $('buy-modal'),
@@ -63,7 +72,6 @@ async function api(ep, method = 'GET', body = null) {
   return r.json();
 }
 
-// ===== TOAST =====
 function toast(type, msg, duration = 4000) {
   const container = $('toast-container');
   const t = document.createElement('div');
@@ -79,13 +87,31 @@ function toast(type, msg, duration = 4000) {
   if (duration > 0) setTimeout(() => { if (t.parentNode) { t.classList.add('out'); setTimeout(() => t.remove(), 300); } }, duration);
 }
 
-// ===== WALLET =====
-function initWalletHub() {
-  if (window.HubApi && !walletHub) {
-    try { walletHub = new window.HubApi('https://hub.nimiq.com'); } catch (e) { console.error(e); }
+async function initWalletHub() {
+  // Try Mini App SDK first (Nimiq Pay native)
+  if (!miniAppProvider && !connectionMethod) {
+    try {
+      const { init } = await import('/node_modules/@nimiq/mini-app-sdk/dist/index.js');
+      const provider = await init({ timeout: 5000 });
+      miniAppProvider = provider;
+      connectionMethod = 'miniapp';
+      console.log('Nimiq Pay Mini App detected');
+      return;
+    } catch (e) {
+      console.log('Mini App SDK not available, trying Hub API');
+    }
   }
-  if (window.HubApi && !hubCheckout) {
-    try { hubCheckout = new window.HubApi('https://hub.nimiq.com'); } catch (e) { console.error(e); }
+
+  // Fallback to Hub API (desktop with extension)
+  if (!walletHub && !connectionMethod) {
+    if (window.HubApi) {
+      try {
+        walletHub = new window.HubApi('https://hub.nimiq.com');
+        hubCheckout = walletHub;
+        connectionMethod = 'hub';
+        console.log('Hub API available');
+      } catch (e) { console.error(e); }
+    }
   }
 }
 
@@ -116,16 +142,67 @@ async function connectWallet() {
   DOM.connectBtn.disabled = true;
   DOM.connectBtn.innerHTML = '<span class="btn-spinner"></span> Connecting...';
   try {
-    initWalletHub();
-    if (!walletHub) throw new Error('Nimiq Hub could not be initialized.');
+    await initWalletHub();
     const ch = await ensureChallenge();
-    const signed = await walletHub.signMessage({ appName: 'NIMGA', message: ch.message });
-    const addr = signed?.signer || '';
+
+    let addr, signature;
+
+    if (connectionMethod === 'miniapp' && miniAppProvider) {
+      // Use Nimiq Pay Mini App SDK (bil project pattern)
+      const accounts = await miniAppProvider.listAccounts();
+
+      // Handle error response
+      if (accounts && typeof accounts === 'object' && 'error' in accounts) {
+        throw new Error(accounts.error.message || 'User rejected connection');
+      }
+
+      // Handle multiple response formats
+      if (typeof accounts === 'string') {
+        addr = accounts;
+      } else if (Array.isArray(accounts) && accounts.length > 0) {
+        addr = accounts[0];
+      } else if (accounts && typeof accounts === 'object') {
+        addr = accounts.address || accounts[0];
+      }
+
+      if (!addr) throw new Error('No accounts found');
+
+      // Sign the challenge message
+      const sigResult = await miniAppProvider.sign(ch.message);
+      if (sigResult && typeof sigResult === 'object' && 'error' in sigResult) {
+        throw new Error('User rejected signing');
+      }
+
+      // Handle multiple signature formats
+      if (typeof sigResult === 'string') {
+        signature = sigResult;
+      } else if (sigResult && typeof sigResult === 'object' && typeof sigResult.signature === 'string') {
+        signature = sigResult.signature;
+      } else if (sigResult instanceof Uint8Array) {
+        signature = Array.from(sigResult).map(b => b.toString(16).padStart(2, '0')).join('');
+      } else {
+        throw new Error('Unexpected signature format');
+      }
+    } else if (connectionMethod === 'hub' && walletHub) {
+      // Fallback to Hub API popup
+      const signed = await walletHub.signMessage({ appName: 'NIMGA', message: ch.message });
+      if (!signed?.signer || !signed?.signature) {
+        throw new Error('Connection cancelled');
+      }
+      addr = signed.signer;
+      const sigBytes = signed.signature;
+      signature = Array.from(
+        sigBytes instanceof Uint8Array ? sigBytes : new Uint8Array(sigBytes)
+      ).map(b => b.toString(16).padStart(2, '0')).join('');
+    } else {
+      throw new Error('No wallet provider available. Please install Nimiq Pay or enable Hub API.');
+    }
+
     if (!addr) throw new Error('No wallet address returned.');
     DOM.connectBtn.innerHTML = '<span class="btn-spinner"></span> Verifying...';
     const vr = await fetch(`${API_BASE}/auth/verify`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: addr, label: '', publicKey: Array.from(signed.signerPublicKey || []), signature: Array.from(signed.signature || []), nonce: ch.nonce })
+      body: JSON.stringify({ address: addr, label: '', signature, nonce: ch.nonce })
     });
     const d = await vr.json();
     if (!vr.ok || !d.success) throw new Error(d.message || 'Verification failed');
@@ -137,8 +214,14 @@ async function connectWallet() {
     toast('success', 'Wallet connected!');
   } catch (err) {
     pendingChallenge = null;
-    const msg = err?.message === 'Request was cancelled' ? 'Connection cancelled.' : (err?.message || 'Login failed');
-    toast('error', msg);
+    // Classify error (bil project pattern)
+    const msg = (err?.message || '').toLowerCase();
+    const isCancelled = err?.type === 'USER_REJECTED'
+      || msg.includes('cancel')
+      || msg.includes('reject')
+      || msg.includes('abort')
+      || msg.includes('user rejected');
+    if (!isCancelled) toast('error', err?.message || 'Login failed');
     try { await ensureChallenge(true); } catch (_) {}
   } finally {
     DOM.connectBtn.disabled = false;
@@ -155,7 +238,14 @@ DOM.logoutBtn.addEventListener('click', async () => {
   toast('info', 'Logged out.');
 });
 
-// ===== UI =====
+function canGenerate() {
+  if (!currentUser) return false;
+  if (currentAgentType === 'text-to-image') {
+    return currentUser.freeRemaining > 0 || currentUser.credits >= 1;
+  }
+  return currentUser.credits >= 10;
+}
+
 function updateUI() {
   const in_ = !!currentUser;
   DOM.connectBtn.classList.toggle('hidden', in_);
@@ -170,94 +260,104 @@ function updateUI() {
   DOM.walletShort.textContent = shortAddr(currentUser.walletAddress);
   DOM.creditCount.textContent = currentUser.credits;
 
-  const can = currentUser.freeRemaining > 0 || currentUser.credits > 0;
-  DOM.generateBtn.disabled = !DOM.promptInput.value.trim() || !can;
+  const hasPrompt = DOM.promptInput.value.trim().length > 0;
+  const can = canGenerate();
+  DOM.generateBtn.disabled = !hasPrompt || !can;
   DOM.createHint.style.display = 'block';
 
-  if (can) {
-    DOM.createHint.textContent = currentUser.freeRemaining > 0
-      ? `${currentUser.freeRemaining} free images left`
-      : `${currentUser.credits} credits`;
-  } else {
-    DOM.createHint.innerHTML = 'No credits left. <a href="#" id="buy-link">Add credits</a>';
-    requestAnimationFrame(() => {
-      const l = document.getElementById('buy-link');
-      if (l) l.onclick = e => { e.preventDefault(); showBuyModal(); };
-    });
-  }
-}
-
-// ===== GALLERY =====
-async function loadGallery() {
-  try {
-    const items = await api(`/api/gallery?tab=${currentGalleryTab}&limit=${currentGalleryTab === 'top' ? 9 : 50}`);
-    if (!items?.length) {
-      DOM.galleryGrid.innerHTML = '<div class="gallery-empty">No images yet. Be the first to create!</div>';
-      return;
+  if (currentAgentType === 'text-to-image') {
+    if (currentUser.freeRemaining > 0) {
+      DOM.createHint.textContent = `${currentUser.freeRemaining} free images left`;
+    } else if (currentUser.credits >= 1) {
+      DOM.createHint.textContent = `${currentUser.credits} credits (1 per image)`;
+    } else {
+      DOM.createHint.innerHTML = 'No credits left. <a href="#" id="buy-link">Add credits</a>';
+      requestAnimationFrame(() => {
+        const l = document.getElementById('buy-link');
+        if (l) l.onclick = e => { e.preventDefault(); showBuyModal(); };
+      });
     }
-    DOM.galleryGrid.innerHTML = items.map(g => `
-      <div class="gallery-card" data-id="${g.id}">
-        <img class="gallery-card-image" src="${esc(g.image_url)}" alt="Generated image" loading="lazy">
-        <div class="gallery-card-footer">
-          <span class="gallery-card-wallet">${esc(shortAddr(g.wallet_address))}</span>
-          <div class="gallery-card-votes">
-            <button class="btn-vote vote-down ${g.userVote === -1 ? 'voted-down' : ''}" data-id="${g.id}" data-value="-1" title="Downvote">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <span class="vote-count">${g.votes || 0}</span>
-            <button class="btn-vote vote-up ${g.userVote === 1 ? 'voted-up' : ''}" data-id="${g.id}" data-value="1" title="Upvote">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    `).join('');
-
-    DOM.galleryGrid.querySelectorAll('.btn-vote').forEach(btn => {
-      btn.addEventListener('click', () => vote(btn.dataset.id, parseInt(btn.dataset.value)));
-    });
-  } catch (e) {
-    console.error(e);
-    DOM.galleryGrid.innerHTML = '<div class="gallery-empty">Failed to load gallery.</div>';
+  } else {
+    if (currentUser.credits >= 10) {
+      DOM.createHint.textContent = `${currentUser.credits} credits (10 per video)`;
+    } else {
+      DOM.createHint.innerHTML = 'Not enough credits. <a href="#" id="buy-link">Add credits</a>';
+      requestAnimationFrame(() => {
+        const l = document.getElementById('buy-link');
+        if (l) l.onclick = e => { e.preventDefault(); showBuyModal(); };
+      });
+    }
   }
 }
 
-async function vote(generationId, value) {
-  if (!currentUser) { connectWallet(); return; }
-  try {
-    const d = await api('/api/vote', 'POST', { generationId, value });
-    if (d.error) { toast('error', d.error); return; }
-    loadGallery();
-  } catch (e) { toast('error', 'Vote failed.'); }
-}
-
-// Tab switching
-document.querySelectorAll('.tab-btn').forEach(btn => {
+document.querySelectorAll('.agent-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    if (isGenerating) return;
+    document.querySelectorAll('.agent-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    currentGalleryTab = btn.dataset.tab;
-    loadGallery();
+    currentAgentType = btn.dataset.type;
+
+    const isImageToVideo = currentAgentType === 'image-to-video';
+    DOM.uploadArea.classList.toggle('hidden', !isImageToVideo);
+
+    const placeholders = {
+      'text-to-image': 'Describe the image you want to create...',
+      'text-to-video': 'Describe the video you want to create...',
+      'image-to-video': 'Describe how the image should animate...',
+    };
+    DOM.promptInput.placeholder = placeholders[currentAgentType];
+
+    if (!isImageToVideo) {
+      uploadedImageBase64 = null;
+      DOM.uploadPreview.classList.add('hidden');
+      DOM.uploadPlaceholder.classList.remove('hidden');
+    }
+
+    updateUI();
   });
 });
 
-// ===== VISIBILITY TOGGLE =====
-DOM.visibilityCheck.addEventListener('change', () => {
-  const isPrivate = DOM.visibilityCheck.checked;
-  DOM.visLabel.textContent = isPrivate ? 'Private' : 'Public';
-  document.querySelector('.public-icon').style.display = isPrivate ? 'none' : 'flex';
-  document.querySelector('.private-icon').style.display = isPrivate ? 'flex' : 'none';
+DOM.uploadArea.addEventListener('click', () => DOM.imageInput.click());
+DOM.imageInput.addEventListener('change', (e) => {
+  if (e.target.files.length > 0) handleImageUpload(e.target.files[0]);
 });
 
-// ===== NEW IMAGE BUTTON =====
+DOM.uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); DOM.uploadArea.classList.add('dragover'); });
+DOM.uploadArea.addEventListener('dragleave', () => DOM.uploadArea.classList.remove('dragover'));
+DOM.uploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  DOM.uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) handleImageUpload(e.dataTransfer.files[0]);
+});
+
+function handleImageUpload(file) {
+  if (!file.type.startsWith('image/')) { toast('error', 'Please upload an image file.'); return; }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    uploadedImageBase64 = e.target.result;
+    DOM.previewImg.src = uploadedImageBase64;
+    DOM.uploadPlaceholder.classList.add('hidden');
+    DOM.uploadPreview.classList.remove('hidden');
+    updateUI();
+  };
+  reader.readAsDataURL(file);
+}
+
+DOM.uploadRemove.addEventListener('click', (e) => {
+  e.stopPropagation();
+  uploadedImageBase64 = null;
+  DOM.imageInput.value = '';
+  DOM.uploadPreview.classList.add('hidden');
+  DOM.uploadPlaceholder.classList.remove('hidden');
+  updateUI();
+});
+
 DOM.newBtn.addEventListener('click', () => {
   DOM.resultArea.classList.add('hidden');
   DOM.promptInput.focus();
 });
 
-// ===== HISTORY =====
 let allHistory = [];
-let historyFilter = 'all';
 
 async function loadHistory() {
   if (!currentUser) return;
@@ -272,19 +372,23 @@ async function loadHistory() {
 }
 
 function renderHistory() {
-  const filtered = historyFilter === 'all' ? allHistory : allHistory.filter(g => (g.visibility || 'public') === historyFilter);
-
-  if (!filtered.length) {
-    DOM.historyGrid.innerHTML = `<div class="gallery-empty">${historyFilter === 'all' ? 'No images yet.' : 'No ' + historyFilter + ' images.'}</div>`;
+  if (!allHistory.length) {
+    DOM.historyGrid.innerHTML = '<div class="gallery-empty">No creations yet.</div>';
     return;
   }
-
-  DOM.historyGrid.innerHTML = filtered.map(g => `
-    <div class="history-card" data-id="${g.id}" data-url="${esc(g.image_url)}" data-prompt="${esc(g.prompt)}">
-      <img src="${esc(g.image_url)}" alt="Generated image" loading="lazy">
+  DOM.historyGrid.innerHTML = allHistory.map(g => {
+    const isVideo = g.type === 'text-to-video' || g.type === 'image-to-video';
+    const typeLabel = g.type === 'text-to-video' ? 'Video' : g.type === 'image-to-video' ? 'Img2Vid' : 'Image';
+    return `
+    <div class="history-card" data-id="${g.id}" data-url="${esc(isVideo ? g.video_url : g.image_url)}" data-prompt="${esc(g.prompt)}" data-type="${g.type}">
+      ${isVideo
+        ? `<video src="${esc(g.video_url)}" muted loop preload="metadata"></video>`
+        : `<img src="${esc(g.image_url)}" alt="Generated" loading="lazy">`
+      }
+      <span class="history-card-type">${typeLabel}</span>
       <span class="history-card-badge ${g.visibility === 'private' ? 'badge-private' : 'badge-public'}">${g.visibility || 'public'}</span>
       <div class="history-card-actions">
-        <button class="btn-card-dl" data-url="${esc(g.image_url)}" title="Download">
+        <button class="btn-card-dl" data-url="${esc(isVideo ? g.video_url : g.image_url)}" title="Download">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </button>
         <button class="btn-card-del" data-id="${g.id}" title="Delete">
@@ -294,123 +398,160 @@ function renderHistory() {
       <div class="history-card-overlay">
         <div class="history-card-prompt">${esc(g.prompt)}</div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   DOM.historyGrid.querySelectorAll('.history-card').forEach(card => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('.btn-card-dl') || e.target.closest('.btn-card-del')) return;
-      openLightbox(card.dataset.url, card.dataset.prompt);
+      const isVideo = card.dataset.type === 'text-to-video' || card.dataset.type === 'image-to-video';
+      openLightbox(card.dataset.url, card.dataset.prompt, isVideo);
     });
   });
 
   DOM.historyGrid.querySelectorAll('.btn-card-dl').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      downloadImage(btn.dataset.url);
-    });
+    btn.addEventListener('click', (e) => { e.stopPropagation(); downloadFile(btn.dataset.url); });
   });
 
   DOM.historyGrid.querySelectorAll('.btn-card-del').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm('Delete this image?')) return;
+      if (!confirm('Delete this creation?')) return;
       const d = await api(`/api/history/${btn.dataset.id}`, 'DELETE');
-      if (d.success) { toast('info', 'Image deleted.'); loadHistory(); }
+      if (d.success) { toast('info', 'Deleted.'); loadHistory(); }
       else toast('error', d.error || 'Delete failed.');
     });
   });
+
+  DOM.historyGrid.querySelectorAll('.history-card video').forEach(vid => {
+    const card = vid.closest('.history-card');
+    card.addEventListener('mouseenter', () => { vid.play().catch(() => {}); });
+    card.addEventListener('mouseleave', () => { vid.pause(); vid.currentTime = 0; });
+  });
 }
 
-document.querySelectorAll('.hist-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.hist-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    historyFilter = tab.dataset.filter;
-    renderHistory();
-  });
-});
-
-function downloadImage(url) {
+function downloadFile(url) {
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'nimga-' + Date.now() + '.png';
+  a.download = 'nimga-' + Date.now() + (url.endsWith('.mp4') ? '.mp4' : '.png');
   document.body.appendChild(a);
   a.click();
   a.remove();
 }
 
-// ===== HISTORY BUTTON =====
-DOM.historyBtn.addEventListener('click', () => {
-  loadHistory();
-  DOM.historyModal.classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-});
-DOM.closeHistory.addEventListener('click', () => {
-  DOM.historyModal.classList.add('hidden');
-  document.body.style.overflow = '';
-});
-DOM.historyModal.querySelector('.modal-backdrop').addEventListener('click', () => {
-  DOM.historyModal.classList.add('hidden');
-  document.body.style.overflow = '';
-});
+DOM.historyBtn.addEventListener('click', () => { loadHistory(); DOM.historyModal.classList.remove('hidden'); document.body.style.overflow = 'hidden'; });
+DOM.closeHistory.addEventListener('click', () => { DOM.historyModal.classList.add('hidden'); document.body.style.overflow = ''; });
+DOM.historyModal.querySelector('.modal-backdrop').addEventListener('click', () => { DOM.historyModal.classList.add('hidden'); document.body.style.overflow = ''; });
 
-// ===== LIGHTBOX =====
-function openLightbox(url, prompt) {
-  DOM.lightboxImg.src = url;
+function openLightbox(url, prompt, isVideo = false) {
+  if (isVideo) {
+    DOM.lightboxImg.classList.add('hidden');
+    DOM.lightboxVideo.classList.remove('hidden');
+    DOM.lightboxVideo.src = url;
+    DOM.lightboxVideo.play().catch(() => {});
+    DOM.lightboxDownload.href = url;
+    DOM.lightboxDownload.download = 'nimga-video.mp4';
+  } else {
+    DOM.lightboxVideo.classList.add('hidden');
+    DOM.lightboxVideo.pause();
+    DOM.lightboxImg.classList.remove('hidden');
+    DOM.lightboxImg.src = url;
+    DOM.lightboxDownload.href = url;
+    DOM.lightboxDownload.download = 'nimga-image.png';
+  }
   DOM.lightboxPrompt.textContent = prompt || '';
-  DOM.lightboxDownload.href = url;
   DOM.lightbox.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 }
+
 function closeLightbox() {
   DOM.lightbox.classList.add('hidden');
+  DOM.lightboxVideo.pause();
+  DOM.lightboxVideo.src = '';
   document.body.style.overflow = '';
 }
 DOM.lightboxClose.addEventListener('click', closeLightbox);
 DOM.lightbox.addEventListener('click', (e) => { if (e.target === DOM.lightbox) closeLightbox(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
-// ===== GENERATE =====
 async function generate() {
   const prompt = DOM.promptInput.value.trim();
-  if (!prompt || isGenerating || !currentUser) return;
-  if (currentUser.freeRemaining <= 0 && currentUser.credits <= 0) { showBuyModal(); return; }
-  isGenerating = true; DOM.generateBtn.disabled = true;
-  DOM.promptInput.value = ''; DOM.promptInput.style.height = 'auto';
+  if (!prompt) { toast('error', 'Please enter a prompt.'); return; }
+  if (isGenerating) return;
+  if (!currentUser) { connectWallet(); return; }
+  if (!canGenerate()) { showBuyModal(); return; }
+
+  isGenerating = true;
+  DOM.generateBtn.disabled = true;
+  DOM.promptInput.value = '';
+  DOM.promptInput.style.height = 'auto';
   DOM.genIndicator.classList.remove('hidden');
+  DOM.resultArea.classList.add('hidden');
+
+  const visibility = 'public';
+
   try {
-    const d = await api('/api/generate', 'POST', { prompt, visibility: DOM.visibilityCheck.checked ? 'private' : 'public' });
+    let d;
+
+    if (currentAgentType === 'text-to-image') {
+      DOM.genStatusText.textContent = 'Creating your image';
+      d = await api('/api/generate', 'POST', { prompt, visibility });
+    } else if (currentAgentType === 'text-to-video') {
+      DOM.genStatusText.textContent = 'Creating your video...';
+      d = await api('/api/generate-video', 'POST', { prompt, visibility });
+    } else if (currentAgentType === 'image-to-video') {
+      if (!uploadedImageBase64) {
+        toast('error', 'Please upload an image first.');
+        isGenerating = false;
+        DOM.genIndicator.classList.add('hidden');
+        updateUI();
+        return;
+      }
+      DOM.genStatusText.textContent = 'Creating your video from image...';
+      d = await api('/api/generate-image-to-video', 'POST', { prompt, imageBase64: uploadedImageBase64, visibility });
+    }
+
     if (d.error) {
       toast('error', d.error);
     } else {
-      currentUser.freeRemaining = d.freeRemaining;
+      currentUser.freeRemaining = d.freeRemaining ?? currentUser.freeRemaining;
       currentUser.credits = d.credits;
-      DOM.resultImage.src = d.imageUrl;
-      DOM.downloadBtn.href = d.imageUrl;
+
+      if (d.videoUrl) {
+        DOM.resultImage.classList.add('hidden');
+        DOM.resultVideo.classList.remove('hidden');
+        DOM.resultVideo.src = d.videoUrl;
+        DOM.downloadBtn.href = d.videoUrl;
+        DOM.downloadBtn.download = 'nimga-video.mp4';
+      } else {
+        DOM.resultVideo.classList.add('hidden');
+        DOM.resultImage.classList.remove('hidden');
+        DOM.resultImage.src = d.imageUrl;
+        DOM.downloadBtn.href = d.imageUrl;
+        DOM.downloadBtn.download = 'nimga-image.png';
+      }
+
       DOM.resultArea.classList.remove('hidden');
-      toast('success', 'Image generated!');
-      loadGallery();
-      loadHistory();
+      toast('success', d.videoUrl ? 'Video generated!' : 'Image generated!');
     }
+  } catch (e) {
+    console.error('Generation error:', e);
+    toast('error', 'Generation failed. Please try again.');
+  } finally {
+    isGenerating = false;
+    DOM.genIndicator.classList.add('hidden');
     updateUI();
-  } catch (e) { toast('error', 'Generation failed.'); }
-  finally { isGenerating = false; DOM.genIndicator.classList.add('hidden'); updateUI(); }
+  }
 }
 
-// ===== INPUT =====
 DOM.generateBtn.addEventListener('click', generate);
 DOM.promptInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generate(); } });
 DOM.promptInput.addEventListener('input', () => {
-  DOM.promptInput.style.height = 'auto'; DOM.promptInput.style.height = Math.min(DOM.promptInput.scrollHeight, 200) + 'px';
-  if (currentUser) DOM.generateBtn.disabled = !(currentUser.freeRemaining > 0 || currentUser.credits > 0) || !DOM.promptInput.value.trim();
+  DOM.promptInput.style.height = 'auto';
+  DOM.promptInput.style.height = Math.min(DOM.promptInput.scrollHeight, 200) + 'px';
+  updateUI();
 });
-document.querySelectorAll('.prompt-chip').forEach(c => c.addEventListener('click', () => {
-  if (!currentUser) { connectWallet(); return; }
-  DOM.promptInput.value = c.dataset.prompt; DOM.promptInput.dispatchEvent(new Event('input')); DOM.promptInput.focus();
-}));
 
-// ===== BUY MODAL =====
 function showPayProgress(title, msg) {
   DOM.payProgress.classList.remove('hidden');
   DOM.payStatusTitle.textContent = title;
@@ -436,29 +577,58 @@ function closeBuyModal() { DOM.modal.classList.add('hidden'); document.body.styl
 
 async function startPayment(credits, info) {
   if (paymentInFlight) return;
-  if (!hubCheckout) { initWalletHub(); if (!hubCheckout) { toast('error', 'Nimiq Hub not available.'); return; } }
+  await initWalletHub();
 
   document.querySelectorAll('.package-card').forEach(c => c.classList.remove('selected'));
   event.currentTarget?.classList.add('selected');
 
   paymentInFlight = true;
-  showPayProgress('Opening Nimiq Hub...', 'Complete the payment in the Nimiq checkout window.');
+  showPayProgress('Preparing payment...', 'Please confirm in your wallet.');
 
   try {
     const pkgData = await api('/api/buy-credits', 'POST', { package: credits });
     if (!pkgData.success) throw new Error(pkgData.error || 'Could not prepare payment');
 
-    const result = await hubCheckout.checkout({
-      appName: 'NIMGA',
-      recipient: pkgData.recipientAddress,
-      value: pkgData.amountLuna,
-      extraData: `NIMGA ${credits} credits`,
-    });
+    let txHash;
 
-    if (!result?.hash) throw new Error('No transaction hash returned.');
+    if (connectionMethod === 'miniapp' && miniAppProvider) {
+      // Use Nimiq Pay Mini App SDK (bil project pattern)
+      showPayProgress('Confirm in Nimiq Pay...', 'Approve the transaction in your wallet.');
+      const txData = {
+        recipient: pkgData.recipientAddress,
+        value: pkgData.amountLuna,
+        fee: 0,
+      };
+
+      const extraData = `NIMGA ${credits} credits`;
+      if (extraData) {
+        txData.extraData = Array.from(new TextEncoder().encode(extraData));
+      }
+
+      const result = await miniAppProvider.sendBasicTransaction(txData);
+      if (result && typeof result === 'object' && 'error' in result) {
+        throw new Error(result.error?.message || 'Transaction failed');
+      }
+      txHash = result.hash;
+    } else if (connectionMethod === 'hub' && hubCheckout) {
+      // Fallback to Hub API popup
+      showPayProgress('Opening Nimiq Hub...', 'Complete the payment in the Nimiq checkout window.');
+      const result = await hubCheckout.checkout({
+        appName: 'NIMGA',
+        recipient: pkgData.recipientAddress,
+        value: pkgData.amountLuna,
+        extraData: `NIMGA ${credits} credits`,
+      });
+      if (!result?.hash) throw new Error('Transaction was cancelled or failed');
+      txHash = result.hash;
+    } else {
+      throw new Error('No wallet provider available.');
+    }
+
+    if (!txHash) throw new Error('No transaction hash returned.');
 
     showPayProgress('Verifying payment...', 'Checking transaction on the Nimiq blockchain.');
-    const d = await api('/api/confirm-payment', 'POST', { txHash: result.hash, package: credits });
+    const d = await api('/api/confirm-payment', 'POST', { txHash, package: credits });
 
     if (!d.success) throw new Error(d.error || 'Payment verification failed');
 
@@ -467,8 +637,15 @@ async function startPayment(credits, info) {
     closeBuyModal();
     toast('success', `${d.creditsAdded} credits added!`);
   } catch (err) {
-    const msg = err?.message === 'Request was cancelled' ? 'Payment cancelled.' : (err?.message || 'Payment failed');
-    if (msg !== 'Payment cancelled.') toast('error', msg);
+    // Classify error (bil project pattern)
+    const msg = (err?.message || '').toLowerCase();
+    const isCancelled = err?.type === 'USER_REJECTED'
+      || msg.includes('cancel')
+      || msg.includes('reject')
+      || msg.includes('abort')
+      || msg.includes('user rejected')
+      || msg.includes('transaction was cancelled');
+    if (!isCancelled) toast('error', err?.message || 'Payment failed');
     hidePayProgress();
   } finally {
     paymentInFlight = false;
@@ -479,12 +656,10 @@ DOM.addCreditsBtn.addEventListener('click', showBuyModal);
 DOM.closeModal.addEventListener('click', closeBuyModal);
 DOM.modal.querySelector('.modal-backdrop').addEventListener('click', closeBuyModal);
 
-// ===== INIT =====
 (async function init() {
-  initWalletHub();
+  await initWalletHub();
   const restored = await restoreSession();
   updateUI();
-  loadGallery();
   if (restored) {
     loadHistory();
     toast('info', 'Welcome back!');

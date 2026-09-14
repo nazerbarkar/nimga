@@ -15,15 +15,15 @@ async function initDb() {
     db = new SQL.Database();
   }
 
-  db.run("CREATE TABLE IF NOT EXISTS users (wallet_address TEXT PRIMARY KEY, free_used INTEGER DEFAULT 0, credits REAL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, last_login TEXT DEFAULT CURRENT_TIMESTAMP)");
-  db.run("CREATE TABLE IF NOT EXISTS generations (id TEXT PRIMARY KEY, wallet_address TEXT NOT NULL, prompt TEXT NOT NULL, image_url TEXT, votes INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)");
+  db.run("CREATE TABLE IF NOT EXISTS users (wallet_address TEXT PRIMARY KEY, free_used INTEGER DEFAULT 0, free_video_used INTEGER DEFAULT 0, credits REAL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, last_login TEXT DEFAULT CURRENT_TIMESTAMP)");
+  db.run("CREATE TABLE IF NOT EXISTS generations (id TEXT PRIMARY KEY, wallet_address TEXT NOT NULL, prompt TEXT NOT NULL, image_url TEXT, video_url TEXT, type TEXT DEFAULT 'text-to-image', visibility TEXT DEFAULT 'public', created_at TEXT DEFAULT CURRENT_TIMESTAMP)");
   db.run("CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, wallet_address TEXT NOT NULL, amount REAL NOT NULL, credits_added REAL NOT NULL, tx_hash TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT CURRENT_TIMESTAMP)");
-  db.run("CREATE TABLE IF NOT EXISTS votes (id TEXT PRIMARY KEY, generation_id TEXT NOT NULL, wallet_address TEXT NOT NULL, value INTEGER DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(generation_id, wallet_address))");
 
-  // Migration: add votes column to existing generations table
-  try { db.run("ALTER TABLE generations ADD COLUMN votes INTEGER DEFAULT 0"); } catch (_) {}
-  try { db.run("ALTER TABLE generations ADD COLUMN visibility TEXT DEFAULT 'public'"); } catch (_) {}
-  try { db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_gen_wallet ON votes(generation_id, wallet_address)"); } catch (_) {}
+  // Migrations
+  try { db.run("ALTER TABLE generations ADD COLUMN video_url TEXT"); } catch (_) {}
+  try { db.run("ALTER TABLE generations ADD COLUMN type TEXT DEFAULT 'text-to-image'"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN free_video_used INTEGER DEFAULT 0"); } catch (_) {}
+  try { db.run("ALTER TABLE users ADD COLUMN free_i2v_used INTEGER DEFAULT 0"); } catch (_) {}
 
   saveDb();
 }
@@ -67,21 +67,47 @@ function getUser(walletAddress) {
 
 function getRemainingFree(walletAddress) {
   const user = getUser(walletAddress);
-  if (!user) return 3;
-  return Math.max(0, 3 - user.free_used);
+  if (!user) return 1;
+  return Math.max(0, 1 - user.free_used);
+}
+
+function getRemainingFreeVideo(walletAddress) {
+  const user = getUser(walletAddress);
+  if (!user) return 1;
+  return Math.max(0, 1 - user.free_video_used);
+}
+
+function getRemainingFreeI2V(walletAddress) {
+  const user = getUser(walletAddress);
+  if (!user) return 1;
+  return Math.max(0, 1 - user.free_i2v_used);
 }
 
 function useFreeGeneration(walletAddress) {
   const user = getUser(walletAddress);
-  if (!user || user.free_used >= 3) return false;
+  if (!user || user.free_used >= 1) return false;
   execute('UPDATE users SET free_used = free_used + 1 WHERE wallet_address = ?', [walletAddress]);
   return true;
 }
 
-function useCredit(walletAddress) {
+function useFreeVideoGeneration(walletAddress) {
   const user = getUser(walletAddress);
-  if (!user || user.credits < 1) return false;
-  execute('UPDATE users SET credits = credits - 1 WHERE wallet_address = ?', [walletAddress]);
+  if (!user || user.free_video_used >= 1) return false;
+  execute('UPDATE users SET free_video_used = free_video_used + 1 WHERE wallet_address = ?', [walletAddress]);
+  return true;
+}
+
+function useFreeI2VGeneration(walletAddress) {
+  const user = getUser(walletAddress);
+  if (!user || user.free_i2v_used >= 1) return false;
+  execute('UPDATE users SET free_i2v_used = free_i2v_used + 1 WHERE wallet_address = ?', [walletAddress]);
+  return true;
+}
+
+function useCredit(walletAddress, amount = 1) {
+  const user = getUser(walletAddress);
+  if (!user || user.credits < amount) return false;
+  execute('UPDATE users SET credits = credits - ? WHERE wallet_address = ?', [amount, walletAddress]);
   return true;
 }
 
@@ -93,10 +119,10 @@ function addCredits(walletAddress, amount, credits) {
   return txId;
 }
 
-function saveGeneration(walletAddress, prompt, imageUrl, visibility = 'public') {
+function saveGeneration(walletAddress, prompt, imageUrl, visibility = 'public', type = 'text-to-image', videoUrl = null) {
   const id = uuidv4();
-  execute('INSERT INTO generations (id, wallet_address, prompt, image_url, visibility) VALUES (?, ?, ?, ?, ?)',
-    [id, walletAddress, prompt, imageUrl, visibility]);
+  execute('INSERT INTO generations (id, wallet_address, prompt, image_url, video_url, type, visibility) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, walletAddress, prompt, imageUrl, videoUrl, type, visibility]);
   return id;
 }
 
@@ -105,38 +131,8 @@ function getGenerations(walletAddress, limit = 50) {
     [walletAddress, limit]);
 }
 
-function getGalleryNew(limit = 50, offset = 0) {
-  return query('SELECT id, image_url, votes, wallet_address, created_at FROM generations WHERE visibility = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', ['public', limit, offset]);
-}
-
-function getGalleryTop(limit = 50, offset = 0) {
-  return query('SELECT id, image_url, votes, wallet_address, created_at FROM generations WHERE visibility = ? ORDER BY votes DESC, created_at DESC LIMIT ? OFFSET ?', ['public', limit, offset]);
-}
-
-function voteGeneration(generationId, walletAddress, value) {
-  const existing = query('SELECT * FROM votes WHERE generation_id = ? AND wallet_address = ?', [generationId, walletAddress]);
-  if (existing.length > 0) {
-    if (existing[0].value === value) {
-      execute('DELETE FROM votes WHERE generation_id = ? AND wallet_address = ?', [generationId, walletAddress]);
-      execute('UPDATE generations SET votes = votes - ? WHERE id = ?', [value, generationId]);
-      return 0;
-    } else {
-      execute('UPDATE votes SET value = ? WHERE generation_id = ? AND wallet_address = ?', [value, generationId, walletAddress]);
-      execute('UPDATE generations SET votes = votes + ? WHERE id = ?', [value * 2, generationId]);
-      return value;
-    }
-  } else {
-    execute('INSERT INTO votes (id, generation_id, wallet_address, value) VALUES (?, ?, ?, ?)',
-      [uuidv4(), generationId, walletAddress, value]);
-    execute('UPDATE generations SET votes = votes + ? WHERE id = ?', [value, generationId]);
-    return value;
-  }
-}
-
-function getUserVote(generationId, walletAddress) {
-  if (!walletAddress) return 0;
-  const rows = query('SELECT value FROM votes WHERE generation_id = ? AND wallet_address = ?', [generationId, walletAddress]);
-  return rows.length > 0 ? rows[0].value : 0;
+function getGallery(limit = 50, offset = 0) {
+  return query('SELECT id, image_url, video_url, type, wallet_address, created_at FROM generations WHERE visibility = ? ORDER BY created_at DESC LIMIT ? OFFSET ?', ['public', limit, offset]);
 }
 
 function getStats() {
@@ -152,8 +148,16 @@ function reverseFreeGeneration(walletAddress) {
   execute('UPDATE users SET free_used = MAX(0, free_used - 1) WHERE wallet_address = ?', [walletAddress]);
 }
 
-function reverseCredit(walletAddress) {
-  execute('UPDATE users SET credits = credits + 1 WHERE wallet_address = ?', [walletAddress]);
+function reverseFreeVideoGeneration(walletAddress) {
+  execute('UPDATE users SET free_video_used = MAX(0, free_video_used - 1) WHERE wallet_address = ?', [walletAddress]);
+}
+
+function reverseFreeI2VGeneration(walletAddress) {
+  execute('UPDATE users SET free_i2v_used = MAX(0, free_i2v_used - 1) WHERE wallet_address = ?', [walletAddress]);
+}
+
+function reverseCredit(walletAddress, amount = 1) {
+  execute('UPDATE users SET credits = credits + ? WHERE wallet_address = ?', [amount, walletAddress]);
 }
 
 module.exports = {
@@ -161,17 +165,20 @@ module.exports = {
   getOrCreateUser,
   getUser,
   getRemainingFree,
+  getRemainingFreeVideo,
+  getRemainingFreeI2V,
   useFreeGeneration,
+  useFreeVideoGeneration,
+  useFreeI2VGeneration,
   useCredit,
   addCredits,
   saveGeneration,
   getGenerations,
-  getGalleryNew,
-  getGalleryTop,
-  voteGeneration,
-  getUserVote,
+  getGallery,
   getStats,
   reverseFreeGeneration,
+  reverseFreeVideoGeneration,
+  reverseFreeI2VGeneration,
   reverseCredit,
   query,
   execute
