@@ -89,30 +89,32 @@ function toast(type, msg, duration = 4000) {
 }
 
 async function initWalletHub() {
-  // Try Mini App SDK first (Nimiq Pay native)
-  if (!miniAppProvider && !connectionMethod) {
+  if (connectionMethod) return;
+
+  if (!miniAppProvider) {
     try {
-      const { init } = await import('/node_modules/@nimiq/mini-app-sdk/dist/index.js');
-      const provider = await init({ timeout: 5000 });
-      miniAppProvider = provider;
-      connectionMethod = 'miniapp';
-      console.log('Nimiq Pay Mini App detected');
-      return;
+      const isNimiqPay = !!(window.nimiq && window.nimiq.pay) || !!window.nimiqPay;
+      const isMiniApp = !!(window.webkit?.messageHandlers?.nimiqPay) || !!(window.Android?.nimiqPay);
+      if (isNimiqPay || isMiniApp) {
+        const { init } = await import('/node_modules/@nimiq/mini-app-sdk/dist/index.js');
+        const provider = await init({ timeout: 3000 });
+        miniAppProvider = provider;
+        connectionMethod = 'miniapp';
+        console.log('Nimiq Pay Mini App detected');
+        return;
+      }
     } catch (e) {
-      console.log('Mini App SDK not available, trying Hub API');
+      console.log('Mini App SDK not available');
     }
   }
 
-  // Fallback to Hub API (desktop with extension)
-  if (!walletHub && !connectionMethod) {
-    if (window.HubApi) {
-      try {
-        walletHub = new window.HubApi('https://hub.nimiq.com');
-        hubCheckout = walletHub;
-        connectionMethod = 'hub';
-        console.log('Hub API available');
-      } catch (e) { console.error(e); }
-    }
+  if (window.HubApi && !connectionMethod) {
+    try {
+      walletHub = new window.HubApi('https://hub.nimiq.com');
+      hubCheckout = walletHub;
+      connectionMethod = 'hub';
+      console.log('Hub API available');
+    } catch (e) { console.error(e); }
   }
 }
 
@@ -658,7 +660,6 @@ DOM.closeModal.addEventListener('click', closeBuyModal);
 DOM.modal.querySelector('.modal-backdrop').addEventListener('click', closeBuyModal);
 
 (async function init() {
-  await initWalletHub();
   const restored = await restoreSession();
   updateUI();
   if (restored) {
