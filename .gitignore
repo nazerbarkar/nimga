@@ -3,7 +3,7 @@ data.db
 vps-data.db
 .token_secret
 .env
-public/images/
+public/images/gen-*
 public/videos/
 seed-full.js
 fix-vps-db.js
